@@ -1,4 +1,4 @@
-.PHONY: test test-integration up down logs smoke loadtest loadtest-smoke
+.PHONY: test test-integration up up-sqs down logs smoke loadtest loadtest-smoke
 
 test:
 	go test -race ./...
@@ -35,3 +35,7 @@ loadtest:
 
 loadtest-smoke:
 	$(K6) run /loadtest/smoke.js
+
+# Same stack, but click events travel over SQS (ElasticMQ emulator) instead of Kafka.
+up-sqs:
+	docker compose -f docker-compose.yml -f docker-compose.sqs.yml up --build -d

@@ -13,6 +13,7 @@ import (
 	"github.com/Octavian-Mihai/shorter-url/internal/config"
 	"github.com/Octavian-Mihai/shorter-url/internal/consumer"
 	"github.com/Octavian-Mihai/shorter-url/internal/events/kafka"
+	"github.com/Octavian-Mihai/shorter-url/internal/events/sqs"
 	"github.com/Octavian-Mihai/shorter-url/internal/metrics"
 	"github.com/Octavian-Mihai/shorter-url/internal/store/postgres"
 )
@@ -40,16 +41,17 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
-	if err := kafka.EnsureTopic(startCtx, cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaPartitions, 1); err != nil {
+	src, lag, err := newSource(startCtx, cfg, log)
+	if err != nil {
 		return err
 	}
-
-	src := consumer.NewKafkaSource(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroup)
 	defer src.Close()
 
 	reg := metrics.New()
 	metrics.RegisterPool(reg, pool)
-	metrics.RegisterLag(reg, src.Lag)
+	if lag != nil {
+		metrics.RegisterLag(reg, lag)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", metrics.Handler(reg))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -61,7 +63,7 @@ func run(log *slog.Logger) error {
 	}()
 	defer msrv.Close()
 
-	log.Info("consumer started", "topic", cfg.KafkaTopic, "group", cfg.KafkaGroup,
+	log.Info("consumer started", "backend", cfg.EventBackend,
 		"batch", cfg.ConsumerBatchSize, "flush_every", cfg.ConsumerFlushEvery)
 	c := consumer.New(src, postgres.NewClickSink(pool), consumer.Options{
 		BatchSize: cfg.ConsumerBatchSize, FlushEvery: cfg.ConsumerFlushEvery, Logger: log,
@@ -70,4 +72,21 @@ func run(log *slog.Logger) error {
 	err = c.Run(ctx)
 	log.Info("consumer stopped")
 	return err
+}
+
+// newSource picks the click-event backend. lag is nil when the backend has no
+// cheap lag signal (SQS exposes ApproximateNumberOfMessages via CloudWatch instead).
+func newSource(ctx context.Context, cfg *config.Config, log *slog.Logger) (consumer.Source, func() int64, error) {
+	if cfg.EventBackend == "sqs" {
+		client, err := sqs.NewClient(ctx, cfg.AWSRegion, cfg.SQSEndpoint)
+		if err != nil {
+			return nil, nil, err
+		}
+		return consumer.NewSQSSource(client, cfg.SQSQueueURL, log), nil, nil
+	}
+	if err := kafka.EnsureTopic(ctx, cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaPartitions, 1); err != nil {
+		return nil, nil, err
+	}
+	ks := consumer.NewKafkaSource(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroup)
+	return ks, ks.Lag, nil
 }

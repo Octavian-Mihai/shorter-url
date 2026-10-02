@@ -18,6 +18,7 @@ import (
 	"github.com/Octavian-Mihai/shorter-url/internal/config"
 	"github.com/Octavian-Mihai/shorter-url/internal/events"
 	"github.com/Octavian-Mihai/shorter-url/internal/events/kafka"
+	"github.com/Octavian-Mihai/shorter-url/internal/events/sqs"
 	"github.com/Octavian-Mihai/shorter-url/internal/httpapi"
 	"github.com/Octavian-Mihai/shorter-url/internal/idgen"
 	"github.com/Octavian-Mihai/shorter-url/internal/link"
@@ -54,7 +55,8 @@ func run(log *slog.Logger) error {
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer rdb.Close()
 
-	if err := kafka.EnsureTopic(startCtx, cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaPartitions, 1); err != nil {
+	pub, err := newPublisher(startCtx, cfg)
+	if err != nil {
 		return err
 	}
 
@@ -87,7 +89,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	clicks := events.NewAsync(kafka.NewPublisher(cfg.KafkaBrokers, cfg.KafkaTopic), events.AsyncOptions{Logger: log})
+	clicks := events.NewAsync(pub, events.AsyncOptions{Logger: log})
 	metrics.RegisterAsync(reg, clicks)
 
 	api := httpapi.New(httpapi.Deps{
@@ -148,4 +150,20 @@ func metricsMux(reg *prometheus.Registry) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", metrics.Handler(reg))
 	return mux
+}
+
+// newPublisher picks the click-event backend. Everything above this line is
+// backend-agnostic: it only sees events.Publisher.
+func newPublisher(ctx context.Context, cfg *config.Config) (events.Publisher, error) {
+	if cfg.EventBackend == "sqs" {
+		client, err := sqs.NewClient(ctx, cfg.AWSRegion, cfg.SQSEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		return sqs.NewPublisher(client, cfg.SQSQueueURL), nil
+	}
+	if err := kafka.EnsureTopic(ctx, cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaPartitions, 1); err != nil {
+		return nil, err
+	}
+	return kafka.NewPublisher(cfg.KafkaBrokers, cfg.KafkaTopic), nil
 }

@@ -1,0 +1,28 @@
+# Runs the same stack with SQS (ElasticMQ emulator) instead of Kafka:
+#   docker compose -f docker-compose.yml -f docker-compose.sqs.yml up --build -d
+# Proves the Publisher/Source interfaces are the only coupling to the bus.
+x-sqs-env: &sqs-env
+  EVENT_BACKEND: sqs
+  SQS_ENDPOINT: http://elasticmq:9324
+  SQS_QUEUE_URL: http://elasticmq:9324/000000000000/click-events
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: local
+  AWS_SECRET_ACCESS_KEY: local
+
+services:
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.6.9
+    volumes: [./deploy/elasticmq/elasticmq.conf:/opt/elasticmq.conf:ro]
+
+  api:
+    environment: *sqs-env
+    depends_on: !override
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      elasticmq: {condition: service_started}
+
+  consumer:
+    environment: *sqs-env
+    depends_on: !override
+      migrate: {condition: service_completed_successfully}
+      elasticmq: {condition: service_started}

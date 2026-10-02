@@ -20,6 +20,10 @@ type Config struct {
 	KafkaPartitions int
 	TrustProxy      bool
 	MetricsAddr     string
+	EventBackend    string // "kafka" or "sqs"
+	SQSQueueURL     string
+	SQSEndpoint     string // optional: local emulator
+	AWSRegion       string
 
 	BlockSize      int64
 	ScrambleSecret uint64
@@ -48,6 +52,10 @@ func Load() (*Config, error) {
 		KafkaGroup:   env("KAFKA_GROUP", "click-consumer"),
 		SeedAPIKey:   os.Getenv("SEED_API_KEY"),
 		MetricsAddr:  env("METRICS_ADDR", ":9100"),
+		EventBackend: env("EVENT_BACKEND", "kafka"),
+		SQSQueueURL:  os.Getenv("SQS_QUEUE_URL"),
+		SQSEndpoint:  os.Getenv("SQS_ENDPOINT"),
+		AWSRegion:    env("AWS_REGION", "us-east-1"),
 	}
 	if c.BlockSize, err = envInt64("BLOCK_SIZE", 1000); err != nil {
 		return nil, err
@@ -85,6 +93,15 @@ func Load() (*Config, error) {
 	c.TrustProxy = os.Getenv("TRUST_PROXY") == "true"
 	if c.ConsumerFlushEvery, err = envDuration("CONSUMER_FLUSH_EVERY", 2*time.Second); err != nil {
 		return nil, err
+	}
+	switch c.EventBackend {
+	case "kafka":
+	case "sqs":
+		if c.SQSQueueURL == "" {
+			return nil, fmt.Errorf("config: SQS_QUEUE_URL is required when EVENT_BACKEND=sqs")
+		}
+	default:
+		return nil, fmt.Errorf("config: EVENT_BACKEND must be \"kafka\" or \"sqs\", got %q", c.EventBackend)
 	}
 	return c, nil
 }
