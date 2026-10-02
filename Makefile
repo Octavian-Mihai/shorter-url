@@ -1,4 +1,4 @@
-.PHONY: test test-integration up down logs smoke
+.PHONY: test test-integration up down logs smoke loadtest loadtest-smoke
 
 test:
 	go test -race ./...
@@ -20,3 +20,18 @@ logs:
 
 smoke:
 	./scripts/smoke.sh
+
+RATE ?= 1500
+DURATION ?= 60s
+K6 = docker run --rm --network shortener_default -v $(PWD)/loadtest:/loadtest -e BASE=http://nginx:8080 grafana/k6:0.54.0
+
+# Raises the per-key creation limit (it exists to protect production, not benchmarks),
+# then runs the mixed read-heavy workload. Watch it live in Grafana: http://localhost:3000
+loadtest:
+	RATE_LIMIT_BURST=1000000 RATE_LIMIT_PER_MINUTE=100000000 docker compose up -d --force-recreate api
+	@sleep 8
+	$(K6) run -e RATE=$(RATE) -e DURATION=$(DURATION) /loadtest/mixed.js
+	docker compose up -d --force-recreate api
+
+loadtest-smoke:
+	$(K6) run /loadtest/smoke.js
