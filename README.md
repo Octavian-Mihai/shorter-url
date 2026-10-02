@@ -14,6 +14,12 @@ Client → nginx → api ×2 ──► Redis (cache, rate limit)
 
 Diagram and package map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## API docs
+
+Interactive Swagger UI served at `/docs` (rendered from `api/openapi.yaml`).
+
+![Swagger UI for the URL Shortener API](docs/screenshots/api-docs.png)
+
 ## Architecture
 
 ```mermaid
