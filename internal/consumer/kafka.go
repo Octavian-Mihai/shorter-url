@@ -45,3 +45,7 @@ func (s *KafkaSource) Commit(ctx context.Context, batch []Delivery) error {
 }
 
 func (s *KafkaSource) Close() error { return s.r.Close() }
+
+// Lag is the reader's current lag (messages behind the log end) for the
+// partitions assigned to this member.
+func (s *KafkaSource) Lag() int64 { return s.r.Stats().Lag }

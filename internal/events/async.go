@@ -75,6 +75,7 @@ func (a *Async) Emit(c Click) {
 	}
 }
 
+func (a *Async) QueueLen() int  { return len(a.ch) }
 func (a *Async) Dropped() int64 { return a.dropped.Load() }
 func (a *Async) Failed() int64  { return a.failed.Load() }
 func (a *Async) Sent() int64    { return a.sent.Load() }

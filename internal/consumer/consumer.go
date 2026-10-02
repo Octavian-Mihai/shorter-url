@@ -36,7 +36,21 @@ type Sink interface {
 	InsertClicks(ctx context.Context, clicks []events.Click) (inserted int64, err error)
 }
 
+// Observer receives pipeline events for metrics.
+type Observer interface {
+	BatchStored(events int, inserted int64, took time.Duration)
+	InsertFailed()
+	Skipped(n int)
+}
+
+type noopObserver struct{}
+
+func (noopObserver) BatchStored(int, int64, time.Duration) {}
+func (noopObserver) InsertFailed()                         {}
+func (noopObserver) Skipped(int)                           {}
+
 type Options struct {
+	Observer   Observer
 	BatchSize  int
 	FlushEvery time.Duration
 	Logger     *slog.Logger
@@ -67,6 +81,9 @@ func New(src Source, sink Sink, opt Options) *Consumer {
 	}
 	if opt.Logger == nil {
 		opt.Logger = slog.Default()
+	}
+	if opt.Observer == nil {
+		opt.Observer = noopObserver{}
 	}
 	return &Consumer{src: src, sink: sink, opt: opt}
 }
@@ -172,13 +189,19 @@ func (c *Consumer) flush(ctx context.Context, batch []Delivery) error {
 			clicks = append(clicks, d.Click)
 		}
 	}
+	if skipped := len(batch) - len(clicks); skipped > 0 {
+		c.opt.Observer.Skipped(skipped)
+	}
 	backoff := 200 * time.Millisecond
 	for len(clicks) > 0 {
+		started := time.Now()
 		inserted, err := c.sink.InsertClicks(ctx, clicks)
 		if err == nil {
+			c.opt.Observer.BatchStored(len(clicks), inserted, time.Since(started))
 			c.opt.Logger.Info("batch stored", "events", len(clicks), "new", inserted, "duplicates", int64(len(clicks))-inserted)
 			break
 		}
+		c.opt.Observer.InsertFailed()
 		c.opt.Logger.Error("insert failed; retrying", "err", err, "backoff", backoff)
 		if !sleep(ctx, backoff) {
 			return ctx.Err()

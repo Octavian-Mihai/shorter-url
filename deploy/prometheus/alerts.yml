@@ -1,0 +1,63 @@
+groups:
+  - name: shortener
+    rules:
+      - alert: ClickEventsDropped
+        expr: rate(shortener_click_events_dropped_total[5m]) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "API is dropping click events (queue full)"
+          description: "Kafka is slower than the redirect rate; analytics are losing data."
+
+      - alert: ClickPublishFailing
+        expr: rate(shortener_click_events_failed_total[5m]) > 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Click events are failing to publish"
+
+      - alert: ConsumerLagHigh
+        expr: sum(shortener_consumer_lag_messages) > 10000
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Click consumer is more than 10k messages behind"
+
+      - alert: ConsumerInsertFailing
+        expr: rate(shortener_consumer_insert_failures_total[5m]) > 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Consumer cannot write to Postgres (offsets are NOT being committed)"
+
+      - alert: RedirectLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(shortener_http_request_duration_seconds_bucket{route="redirect"}[5m]))) > 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Redirect p99 latency above 100ms"
+
+      - alert: RedirectErrorRate
+        expr: |
+          sum(rate(shortener_http_requests_total{route="redirect",code=~"5.."}[5m]))
+            / sum(rate(shortener_http_requests_total{route="redirect"}[5m])) > 0.01
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "More than 1% of redirects return 5xx"
+
+      - alert: CacheHitRatioLow
+        expr: |
+          sum(rate(shortener_resolve_total{result="hit"}[10m]))
+            / sum(rate(shortener_resolve_total{result=~"hit|miss"}[10m])) < 0.7
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Redirect cache hit ratio below 70%"
+
+      - alert: InstanceDown
+        expr: up{job=~"api|consumer"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.job }} instance {{ $labels.instance }} is down"

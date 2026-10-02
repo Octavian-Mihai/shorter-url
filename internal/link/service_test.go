@@ -310,3 +310,38 @@ func TestCreateValidation(t *testing.T) {
 		}
 	}
 }
+
+type recObserver struct {
+	mu  sync.Mutex
+	got []string
+}
+
+func (o *recObserver) Resolve(r string) { o.mu.Lock(); o.got = append(o.got, r); o.mu.Unlock() }
+
+func TestResolveReportsOutcomes(t *testing.T) {
+	repo, c := newFakeRepo(), newFakeCache()
+	repo.links["abc"] = &Link{Slug: "abc", URL: "https://example.com"}
+	obs := &recObserver{}
+	svc := NewService(repo, c, &seqGen{list: []string{"x"}}, Options{
+		CacheTTL: time.Hour, NegativeCacheTTL: time.Minute, Now: func() time.Time { return t0 }, Observer: obs,
+	})
+	ctx := context.Background()
+	svc.Resolve(ctx, "abc")   // miss -> db
+	svc.Resolve(ctx, "abc")   // hit
+	svc.Resolve(ctx, "ghost") // miss -> not found
+	svc.Resolve(ctx, "ghost") // negative hit
+	c.getErr = errors.New("down")
+	svc.Resolve(ctx, "abc") // cache_error, then db => miss
+	repo.err = errors.New("pg")
+	svc.Resolve(ctx, "other") // cache_error, db_error
+
+	want := []string{"miss", "hit", "miss", "negative_hit", "cache_error", "miss", "cache_error", "db_error"}
+	if len(obs.got) != len(want) {
+		t.Fatalf("got %v, want %v", obs.got, want)
+	}
+	for i := range want {
+		if obs.got[i] != want[i] {
+			t.Errorf("event %d = %s, want %s (all: %v)", i, obs.got[i], want[i], obs.got)
+		}
+	}
+}

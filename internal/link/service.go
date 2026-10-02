@@ -17,7 +17,19 @@ type SlugGenerator interface {
 	NewSlug(ctx context.Context) (string, error)
 }
 
+// Observer receives redirect-path outcomes for metrics. All methods must be cheap.
+type Observer interface {
+	// Resolve is called once per Resolve with one of:
+	// "hit", "negative_hit", "miss" (loaded from the DB), "cache_error", "db_error".
+	Resolve(result string)
+}
+
+type noopObserver struct{}
+
+func (noopObserver) Resolve(string) {}
+
 type Options struct {
+	Observer         Observer
 	CacheTTL         time.Duration
 	NegativeCacheTTL time.Duration
 	SelfHost         string // host of the shortener itself; links to it are rejected (redirect loops)
@@ -39,6 +51,9 @@ func NewService(repo Repository, cache Cache, gen SlugGenerator, opt Options) *S
 	}
 	if opt.Logger == nil {
 		opt.Logger = slog.Default()
+	}
+	if opt.Observer == nil {
+		opt.Observer = noopObserver{}
 	}
 	return &Service{repo: repo, cache: cache, gen: gen, opt: opt}
 }
@@ -110,8 +125,14 @@ func (s *Service) Resolve(ctx context.Context, slug string) (string, error) {
 	now := s.opt.Now()
 
 	if e, err := s.cache.Get(ctx, slug); err != nil {
+		s.opt.Observer.Resolve("cache_error")
 		s.opt.Logger.Warn("cache get failed; falling back to db", "err", err)
 	} else if e != nil {
+		if e.Missing {
+			s.opt.Observer.Resolve("negative_hit")
+		} else {
+			s.opt.Observer.Resolve("hit")
+		}
 		return s.fromEntry(e, now)
 	}
 
@@ -121,8 +142,10 @@ func (s *Service) Resolve(ctx context.Context, slug string) (string, error) {
 		return s.loadAndCache(context.WithoutCancel(ctx), slug, now)
 	})
 	if err != nil {
+		s.opt.Observer.Resolve("db_error")
 		return "", err
 	}
+	s.opt.Observer.Resolve("miss")
 	return s.fromEntry(v.(*CacheEntry), now)
 }
 

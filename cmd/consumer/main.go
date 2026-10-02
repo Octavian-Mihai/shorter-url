@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +13,7 @@ import (
 	"github.com/Octavian-Mihai/shorter-url/internal/config"
 	"github.com/Octavian-Mihai/shorter-url/internal/consumer"
 	"github.com/Octavian-Mihai/shorter-url/internal/events/kafka"
+	"github.com/Octavian-Mihai/shorter-url/internal/metrics"
 	"github.com/Octavian-Mihai/shorter-url/internal/store/postgres"
 )
 
@@ -44,10 +47,25 @@ func run(log *slog.Logger) error {
 	src := consumer.NewKafkaSource(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroup)
 	defer src.Close()
 
+	reg := metrics.New()
+	metrics.RegisterPool(reg, pool)
+	metrics.RegisterLag(reg, src.Lag)
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.Handler(reg))
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	msrv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := msrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("metrics server", "err", err)
+		}
+	}()
+	defer msrv.Close()
+
 	log.Info("consumer started", "topic", cfg.KafkaTopic, "group", cfg.KafkaGroup,
 		"batch", cfg.ConsumerBatchSize, "flush_every", cfg.ConsumerFlushEvery)
 	c := consumer.New(src, postgres.NewClickSink(pool), consumer.Options{
 		BatchSize: cfg.ConsumerBatchSize, FlushEvery: cfg.ConsumerFlushEvery, Logger: log,
+		Observer: metrics.ConsumerObserver(reg),
 	})
 	err = c.Run(ctx)
 	log.Info("consumer stopped")

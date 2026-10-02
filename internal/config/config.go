@@ -19,6 +19,7 @@ type Config struct {
 	KafkaGroup      string
 	KafkaPartitions int
 	TrustProxy      bool
+	MetricsAddr     string
 
 	BlockSize      int64
 	ScrambleSecret uint64
@@ -46,6 +47,7 @@ func Load() (*Config, error) {
 		KafkaTopic:   env("KAFKA_TOPIC", "click-events"),
 		KafkaGroup:   env("KAFKA_GROUP", "click-consumer"),
 		SeedAPIKey:   os.Getenv("SEED_API_KEY"),
+		MetricsAddr:  env("METRICS_ADDR", ":9100"),
 	}
 	if c.BlockSize, err = envInt64("BLOCK_SIZE", 1000); err != nil {
 		return nil, err

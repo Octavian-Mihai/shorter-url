@@ -44,6 +44,9 @@ type Deps struct {
 	TrustProxy bool
 	Logger     *slog.Logger
 	Now        func() time.Time
+	// Instrument wraps a handler with metrics; route is a low-cardinality name
+	// (never the raw path). Nil means no instrumentation.
+	Instrument func(route string, next http.HandlerFunc) http.HandlerFunc
 }
 
 type Server struct {
@@ -59,10 +62,14 @@ func New(d Deps) *Server {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.Instrument == nil {
+		d.Instrument = func(_ string, next http.HandlerFunc) http.HandlerFunc { return next }
+	}
 	s := &Server{Deps: d, mux: http.NewServeMux()}
+	in := d.Instrument
 
-	s.mux.HandleFunc("POST /v1/links", s.requireKey(s.handleCreate))
-	s.mux.HandleFunc("GET /v1/links/{slug}/stats", s.requireKey(s.handleStats))
+	s.mux.HandleFunc("POST /v1/links", in("create", s.requireKey(s.handleCreate)))
+	s.mux.HandleFunc("GET /v1/links/{slug}/stats", in("stats", s.requireKey(s.handleStats)))
 
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -77,7 +84,7 @@ func New(d Deps) *Server {
 		http.Redirect(w, r, "/docs", http.StatusFound)
 	})
 
-	s.mux.HandleFunc("GET /{slug}", s.handleRedirect) // also serves HEAD
+	s.mux.HandleFunc("GET /{slug}", in("redirect", s.handleRedirect)) // also serves HEAD
 	return s
 }
 
