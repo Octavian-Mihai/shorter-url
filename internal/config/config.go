@@ -24,6 +24,7 @@ type Config struct {
 	SQSQueueURL     string
 	SQSEndpoint     string // optional: local emulator
 	AWSRegion       string
+	RedisTLS        bool
 
 	BlockSize      int64
 	ScrambleSecret uint64
@@ -91,6 +92,7 @@ func Load() (*Config, error) {
 	}
 	c.KafkaPartitions = int(parts)
 	c.TrustProxy = os.Getenv("TRUST_PROXY") == "true"
+	c.RedisTLS = os.Getenv("REDIS_TLS") == "true"
 	if c.ConsumerFlushEvery, err = envDuration("CONSUMER_FLUSH_EVERY", 2*time.Second); err != nil {
 		return nil, err
 	}

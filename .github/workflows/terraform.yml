@@ -25,5 +25,10 @@ jobs:
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false -input=false
       - run: terraform validate
+      - name: Security scan (Trivy, HIGH/CRITICAL fail the build)
+        working-directory: .
+        run: |
+          docker run --rm -v "$PWD":/src aquasec/trivy:latest config --quiet \
+            --exit-code 1 --severity HIGH,CRITICAL /src/infra/terraform
       # No `plan`/`apply` here on purpose: that needs AWS credentials and creates
       # billable resources. Add an OIDC-authenticated plan job when deploying for real.

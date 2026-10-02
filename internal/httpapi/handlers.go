@@ -60,9 +60,12 @@ func (s *Server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) clientIP(r *http.Request) string {
 	if s.TrustProxy {
+		// Use the RIGHTMOST entry: that is the address our own proxy saw and
+		// appended (AWS ALB appends; nginx here overwrites, so there is only one).
+		// Earlier entries are client-supplied and can be forged.
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			return strings.TrimSpace(first)
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

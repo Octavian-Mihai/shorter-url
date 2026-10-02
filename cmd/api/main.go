@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -52,7 +53,11 @@ func run(log *slog.Logger) error {
 	}
 	defer pool.Close()
 
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	ropts := &redis.Options{Addr: cfg.RedisAddr}
+	if cfg.RedisTLS { // ElastiCache with in-transit encryption
+		ropts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	rdb := redis.NewClient(ropts)
 	defer rdb.Close()
 
 	pub, err := newPublisher(startCtx, cfg)

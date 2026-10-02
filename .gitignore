@@ -5,3 +5,12 @@ bin/
 .idea/
 .vscode/
 loadtest/results/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+crash.log
+*.tfvars
+!example.tfvars

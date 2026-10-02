@@ -208,9 +208,10 @@ func TestClientIPProxyTrust(t *testing.T) {
 		t.Errorf("untrusted proxy: ip = %q, XFF must be ignored", ip)
 	}
 	h.srv.TrustProxy = true
-	h.do("GET", "/abc", "", "X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+	// A forged leading entry must not win; the proxy-appended (rightmost) one does.
+	h.do("GET", "/abc", "", "X-Forwarded-For", "6.6.6.6, 203.0.113.7")
 	if ip := h.clicks.got[1].IP; ip != "203.0.113.7" {
-		t.Errorf("trusted proxy: ip = %q", ip)
+		t.Errorf("trusted proxy: ip = %q, want rightmost entry", ip)
 	}
 }
 

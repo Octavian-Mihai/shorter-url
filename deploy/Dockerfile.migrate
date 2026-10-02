@@ -1,0 +1,5 @@
+# Migration runner with the SQL baked in, for environments (ECS) where we
+# cannot mount ./migrations like compose does.
+FROM migrate/migrate:v4.17.1
+COPY migrations /migrations
+ENTRYPOINT ["migrate", "-path", "/migrations"]
