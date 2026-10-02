@@ -46,8 +46,17 @@ up() {
 # Demonstrates maxUnavailable=0 + readiness probes + the preStop drain delay.
 rolling() {
   local slug fails=0 total=0 code
-  slug=$(curl -fsS -X POST http://localhost:8081/v1/links -H 'X-API-Key: dev-key-change-me' \
-    -H 'Content-Type: application/json' -d '{"url":"https://example.com/rolling"}' | sed -n 's/.*"slug":"\([^"]*\)".*/\1/p')
+  # The smoke test deliberately drains the creation rate limiter, so wait it out
+  # (a 429 here is correct behaviour, not a failure).
+  local body='' attempt
+  for attempt in $(seq 1 40); do
+    body=$(curl -s -w '\n%{http_code}' -X POST http://localhost:8081/v1/links -H 'X-API-Key: dev-key-change-me' \
+      -H 'Content-Type: application/json' -d '{"url":"https://example.com/rolling"}')
+    [ "${body##*$'\n'}" = 201 ] && break
+    sleep 3
+  done
+  [ "${body##*$'\n'}" = 201 ] || { echo "could not create a link (last status ${body##*$'\n'})" >&2; return 1; }
+  slug=$(printf '%s' "$body" | sed -n 's/.*"slug":"\([^"]*\)".*/\1/p' | head -1)
   $KCTL -n $NS rollout restart deploy/api >/dev/null
   $KCTL -n $NS rollout status deploy/api --timeout=180s >/dev/null 2>&1 &
   local watcher=$!
