@@ -115,3 +115,45 @@ func TestLinkRepoAndAPIKeys(t *testing.T) {
 		t.Errorf("missing err = %v", err)
 	}
 }
+
+func TestStats(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	rows := []struct {
+		id, ref string
+		ago     time.Duration
+	}{
+		{"00000000-0000-0000-0000-000000000001", "https://a.example", time.Hour},
+		{"00000000-0000-0000-0000-000000000002", "https://a.example", 2 * time.Hour},
+		{"00000000-0000-0000-0000-000000000003", "https://b.example", 3 * time.Hour},
+		{"00000000-0000-0000-0000-000000000004", "", 4 * time.Hour},
+		{"00000000-0000-0000-0000-000000000005", "https://old.example", 45 * 24 * time.Hour},
+	}
+	for _, r := range rows {
+		if _, err := pool.Exec(ctx, `INSERT INTO clicks (event_id, slug, clicked_at, referer) VALUES ($1,'s1',$2,$3)`,
+			r.id, time.Now().Add(-r.ago), r.ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := NewStatsRepo(pool).Stats(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.TotalClicks != 5 {
+		t.Errorf("total = %d", s.TotalClicks)
+	}
+	var recent int64
+	for _, d := range s.ByDay {
+		recent += d.Clicks
+	}
+	if recent != 4 {
+		t.Errorf("30d clicks = %d, want 4", recent)
+	}
+	if len(s.TopReferers) == 0 || s.TopReferers[0].Referer != "https://a.example" || s.TopReferers[0].Clicks != 2 {
+		t.Errorf("referers = %+v", s.TopReferers)
+	}
+	empty, err := NewStatsRepo(pool).Stats(ctx, "none")
+	if err != nil || empty.TotalClicks != 0 || empty.ByDay == nil || empty.TopReferers == nil {
+		t.Errorf("empty = %+v, %v", empty, err)
+	}
+}

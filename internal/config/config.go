@@ -10,13 +10,15 @@ import (
 )
 
 type Config struct {
-	HTTPAddr     string
-	BaseURL      string // public origin used when building short URLs
-	DatabaseURL  string
-	RedisAddr    string
-	KafkaBrokers []string
-	KafkaTopic   string
-	KafkaGroup   string
+	HTTPAddr        string
+	BaseURL         string // public origin used when building short URLs
+	DatabaseURL     string
+	RedisAddr       string
+	KafkaBrokers    []string
+	KafkaTopic      string
+	KafkaGroup      string
+	KafkaPartitions int
+	TrustProxy      bool
 
 	BlockSize      int64
 	ScrambleSecret uint64
@@ -73,6 +75,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	c.ConsumerBatchSize = int(batch)
+	parts, err := envInt64("KAFKA_PARTITIONS", 3)
+	if err != nil {
+		return nil, err
+	}
+	c.KafkaPartitions = int(parts)
+	c.TrustProxy = os.Getenv("TRUST_PROXY") == "true"
 	if c.ConsumerFlushEvery, err = envDuration("CONSUMER_FLUSH_EVERY", 2*time.Second); err != nil {
 		return nil, err
 	}

@@ -196,3 +196,9 @@ func validateAlias(a string) error {
 	}
 	return nil
 }
+
+// Get reads a link straight from the source of truth (bypassing the cache and
+// expiry filtering). Used for ownership checks on management endpoints.
+func (s *Service) Get(ctx context.Context, slug string) (*Link, error) {
+	return s.repo.Get(ctx, slug)
+}

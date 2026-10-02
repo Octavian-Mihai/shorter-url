@@ -8,12 +8,16 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Octavian-Mihai/shorter-url/internal/auth"
 )
 
 // ErrInvalidAPIKey is returned when a key is unknown or revoked.
-var ErrInvalidAPIKey = errors.New("invalid api key")
+var ErrInvalidAPIKey = auth.ErrInvalidKey
 
 type APIKeyRepo struct{ pool *pgxpool.Pool }
+
+var _ auth.Authenticator = (*APIKeyRepo)(nil)
 
 func NewAPIKeyRepo(pool *pgxpool.Pool) *APIKeyRepo { return &APIKeyRepo{pool: pool} }
 

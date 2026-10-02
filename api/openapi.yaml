@@ -1,0 +1,145 @@
+openapi: 3.0.3
+info:
+  title: URL Shortener API
+  version: 1.0.0
+  description: |
+    Read-heavy URL shortener. Redirects are public and use **302** so every click
+    is observable. Management endpoints require an API key.
+
+    Click statistics are **eventually consistent**: clicks flow through Kafka and
+    are batched into Postgres by a separate consumer, so they trail redirects by
+    a few seconds.
+servers:
+  - url: http://localhost:8080
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    Bearer:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string, example: not_found}
+            message: {type: string}
+    CreateLinkRequest:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Absolute http(s) URL.
+          example: https://example.com/some/long/path
+        alias:
+          type: string
+          minLength: 3
+          maxLength: 32
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: Optional custom slug. Reserved words (api, docs, v1, ...) are rejected.
+          example: my-launch
+        expires_at:
+          type: string
+          format: date-time
+          description: Optional expiry; must be in the future.
+    Link:
+      type: object
+      properties:
+        slug: {type: string, example: 3xYk9aB}
+        short_url: {type: string, example: 'http://localhost:8080/3xYk9aB'}
+        url: {type: string}
+        expires_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+    Stats:
+      type: object
+      properties:
+        slug: {type: string}
+        total_clicks: {type: integer, format: int64}
+        clicks_by_day:
+          type: array
+          description: Last 30 days, UTC.
+          items:
+            type: object
+            properties:
+              date: {type: string, format: date}
+              clicks: {type: integer, format: int64}
+        top_referers:
+          type: array
+          items:
+            type: object
+            properties:
+              referer: {type: string}
+              clicks: {type: integer, format: int64}
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+paths:
+  /v1/links:
+    post:
+      summary: Create a short link
+      security: [{ApiKey: []}, {Bearer: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateLinkRequest'}}}
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location: {schema: {type: string}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/Link'}}}
+        '400': {description: Invalid URL, alias, expiry or body, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {description: Alias already in use, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '413': {description: Body too large}
+        '429':
+          description: Rate limited (token bucket per API key)
+          headers:
+            Retry-After: {schema: {type: integer}, description: Seconds until a token is available}
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+  /v1/links/{slug}/stats:
+    get:
+      summary: Per-link analytics
+      description: Only the API key that created the link can read its stats; other keys get 404.
+      security: [{ApiKey: []}, {Bearer: []}]
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Stats'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {description: Not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  /{slug}:
+    get:
+      summary: Redirect to the destination
+      description: Returns 302 with `Cache-Control No-store`. Records a click asynchronously. HEAD requests are not counted.
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+      responses:
+        '302':
+          description: Redirect
+          headers:
+            Location: {schema: {type: string}}
+        '404': {description: Unknown slug}
+        '410': {description: Link expired}
+  /healthz:
+    get:
+      summary: Liveness
+      responses:
+        '200': {description: OK}
+  /readyz:
+    get:
+      summary: Readiness (checks Postgres and Redis)
+      responses:
+        '200': {description: Ready}
+        '503': {description: A dependency is unavailable}
