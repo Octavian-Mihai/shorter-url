@@ -35,6 +35,16 @@ flowchart LR
     H -->|stats query| PG
 ```
 
+## Deployment targets
+
+| Target | Bus | Edge | Metrics | How |
+|---|---|---|---|---|
+| Docker Compose | Kafka (or SQS via override) | nginx | Prometheus + Grafana | `docker compose up` |
+| Kubernetes (kind) | Kafka | NodePort | Prometheus (pod discovery) + Grafana | `make k8s-up` |
+| AWS (Terraform) | SQS + DLQ | ALB | CloudWatch alarms | `infra/terraform` |
+
+Prometheus scrapes `:9100/metrics` on every API and consumer instance. That port is never exposed through the edge.
+
 ## Request paths
 
 **Redirect `GET /{slug}`**: Redis hit → 302. Miss → one coalesced Postgres read → fill Redis → 302.
@@ -51,8 +61,9 @@ slug from local ID block (or custom alias) → insert into Postgres.
 | `internal/link` | Domain model, service (create/resolve), cache interface |
 | `internal/cache` | Redis cache-aside implementation |
 | `internal/ratelimit` | Redis Lua token bucket |
-| `internal/events` | `Publisher` interface, non-blocking `Async` wrapper; `events/kafka` backend |
+| `internal/events` | `Publisher` interface, non-blocking `Async` wrapper; `events/kafka` and `events/sqs` backends |
 | `internal/consumer` | `Source`/`Sink` interfaces, batching/commit loop, Kafka source |
+| `internal/metrics` | Prometheus adapters (observer interfaces → counters/histograms) |
 | `internal/store/postgres` | Pool, block claiming, repos, batch click insert, stats |
 | `internal/httpapi` | Handlers, auth middleware, docs endpoints |
 | `api/` | Embedded OpenAPI spec |

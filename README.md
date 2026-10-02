@@ -2,7 +2,7 @@
 
 A read-optimized URL shortener in Go, built to demonstrate distributed-systems
 design: stateless horizontally-scaled API, cache-aside reads, range-allocated
-IDs, and an asynchronous, idempotent analytics pipeline over Kafka.
+IDs, and an asynchronous, idempotent analytics pipeline over Kafka (or SQS).
 
 Redirects outnumber writes ~100:1, so every decision below favors the redirect path.
 
@@ -13,6 +13,18 @@ Client → nginx → api ×2 ──► Redis (cache, rate limit)
 ```
 
 Diagram and package map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## What's here
+
+| Layer | Where | Verified how |
+|---|---|---|
+| Core service (API, consumer, Postgres, Redis, Kafka) | `cmd/`, `internal/`, `docker-compose.yml` | unit + integration tests, `scripts/smoke.sh` |
+| Observability (Prometheus, Grafana, alert rules) | `internal/metrics`, `deploy/prometheus`, `deploy/grafana` | live scrape of all targets, dashboard provisioned |
+| Load testing (k6, 100:1 mix) | `loadtest/`, [docs/LOADTEST.md](docs/LOADTEST.md) | run locally; numbers and caveats recorded |
+| SQS backend (`EVENT_BACKEND=sqs`) | `internal/events/sqs`, `internal/consumer/sqs.go`, `docker-compose.sqs.yml` | unit tests + full smoke test on ElasticMQ |
+| Kubernetes on kind | `deploy/k8s/` | deployed, smoke-tested, rolling restart under traffic |
+| CI/CD (GitHub Actions) | `.github/workflows/` | runs on every push (see Actions tab); actionlint-clean |
+| AWS via Terraform (ECS Fargate, RDS, ElastiCache, SQS, ALB) | `infra/terraform/` | `fmt`, `validate`, Trivy; **not applied to a real account** |
 
 ## Quick start
 
@@ -34,6 +46,11 @@ curl -X POST localhost:8080/v1/links -H 'X-API-Key: dev-key-change-me' \
 curl -i localhost:8080/hello                      # 302 → destination
 curl localhost:8080/v1/links/hello/stats -H 'X-API-Key: dev-key-change-me'
 ```
+
+- Grafana (dashboard "URL Shortener Overview"): http://localhost:3000 (`GRAFANA_PORT` to change) · Prometheus: http://localhost:9090
+- `docker compose -f docker-compose.yml -f docker-compose.sqs.yml up --build -d` runs the same stack with **SQS** (ElasticMQ) instead of Kafka
+- `make loadtest` generates a 100:1 read-heavy workload with k6 while you watch Grafana
+- `make k8s-up` deploys everything to a local **kind** cluster (API on :8081, Grafana on :3300)
 
 Tear down with `docker compose down -v`.
 
@@ -114,11 +131,17 @@ Tested with simulated redelivery (3 deliveries of the same 6 events → 6 rows) 
 
 Rejected: **Kafka exactly-once transactions** (don't extend to a non-Kafka sink without an outbox; idempotent sink is simpler and sufficient), **`COPY`** (no `ON CONFLICT`), **row-at-a-time inserts** (round-trip bound), **dedupe in Redis** (extra state that can disagree with the DB).
 
-### 6. Kafka behind an interface (SQS-ready)
+### 6. Kafka behind an interface, with a working SQS backend
 Producer: `events.Publisher` (`Publish(ctx, []Click)`); consumer: `consumer.Source` (`Fetch`/`Commit`) and `consumer.Sink`.
-For AWS, add `events/sqs` (`SendMessageBatch`, 10 messages max per call) and an SQS `Source` (long-poll `ReceiveMessage`, `DeleteMessageBatch` as "commit").
+`EVENT_BACKEND=kafka|sqs` selects the implementation in `main`; everything else only sees the interfaces.
+The SQS side (`internal/events/sqs`, `internal/consumer/sqs.go`) batches 10 per `SendMessageBatch`, retries rejected
+entries once, long-polls `ReceiveMessage`, and treats `DeleteMessageBatch` as "commit". It is verified end to end:
+the full smoke test passes with clicks flowing through ElasticMQ (`docker-compose.sqs.yml`), and the API logs contain no Kafka references.
+
 Because the sink is idempotent, a standard SQS queue (at-least-once, unordered) is enough: **no FIFO queue required**.
-Batch-shaped signatures were chosen because both systems amortize round trips that way.
+Differences handled explicitly: SQS has no offsets (delete = commit), a stale receipt handle is a *sender fault* that must not
+be retried forever (it would wedge the consumer; the message is redelivered and deduplicated instead), and consumer lag
+comes from CloudWatch (`ApproximateAgeOfOldestMessage`) rather than a client-side gauge.
 
 ### 7. Rate limiting: Redis token bucket in Lua
 Per API key on creation. The whole read-modify-write is one Lua script, atomic across all instances without locks, and
@@ -142,7 +165,53 @@ At larger scale `clicks` should be time-partitioned, or moved to a column store;
 - **Topics created explicitly (`EnsureTopic`)**: broker auto-creation raced with the first write in testing (found by the integration test) and gives no control over partition count.
 - **OpenAPI spec is hand-written** and embedded in the binary. It can drift from handlers; code generation was heavier than warranted.
 - **nginx in compose** round-robins across `api` replicas (re-resolving Docker DNS every 5 s) and overwrites `X-Forwarded-For`; the API trusts that header only when `TRUST_PROXY=true`.
-- **Logging**: management calls only. Per-redirect logs would cost more than the redirect; redirect metrics come with the Prometheus layer.
+- **Logging**: management calls only. Per-redirect logs would cost more than the redirect; redirect behavior is observed through metrics (§11).
+
+### 11. Observability
+Prometheus **pull** model, metrics on a **separate port (9100) that is never published** through the load balancer.
+Routes are labelled by name (`redirect`, `create`, `stats`), never by raw path, so slug cardinality cannot blow up the TSDB.
+Latency buckets are dense in the low milliseconds because a cache-hit redirect should take about one. The key signals:
+cache outcome (`hit`/`negative_hit`/`miss`/errors), click queue length and `sent`/`dropped`/`failed` counters (read lazily
+from atomics on scrape, so they cost nothing on the redirect path), consumer lag and duplicates, DB pool saturation, ID block claims,
+and rate limiter decisions. `deploy/prometheus/alerts.yml` encodes eight alerts (dropped/failed clicks, consumer lag, insert
+failures, redirect p99 and 5xx rate, cache hit ratio, instance down). Compose discovers replicas through DNS; Kubernetes
+through pod annotations; both load the same alert rules and dashboard JSON.
+
+Rejected: **OpenTelemetry-first** (heavier for a metrics-only need; the observer interfaces would let us add it), **push gateways**,
+**per-request logging** (cost on the hot path).
+
+### 12. Kubernetes
+Plain kustomize, no Helm: the app is two Deployments and the manifests are easy to read. Notable details: `maxUnavailable: 0` +
+readiness on `/readyz` + a native `preStop` sleep (the distroless image has no shell) so rolling updates drain cleanly;
+`enableServiceLinks: false` on Kafka (otherwise Kubernetes injects `KAFKA_PORT=tcp://...`, which the Kafka image misreads as
+broker config); PodDisruptionBudget; HPA on CPU (metrics-server installed in kind); read-only root filesystem, non-root, all
+capabilities dropped; `init` containers wait for the migration Job. The ConfigMaps for migrations, alert rules and dashboards
+are generated from the repo's own files, so there is one source of truth across compose and Kubernetes.
+
+Rolling restarts under continuous traffic: 9 of 10 runs showed **0 failed requests** (~100 each). One run, during cluster
+warm-up right after metrics-server was installed, saw 2 connection failures in 541 requests; the cause was not captured, and
+it did not reproduce. I'd rather report that than claim perfect zero-downtime.
+
+### 13. CI/CD
+GitHub Actions: gofmt, `go mod tidy` cleanliness, vet, race tests, `govulncheck`; integration tests against *real* Postgres and
+Kafka service containers; a compose end-to-end job (Kafka variant, k6 smoke, then the SQS variant); a kind end-to-end job
+(deploy, smoke, rolling restart); and a matrix image build that publishes to GHCR only from `main`. Terraform has its own
+path-filtered workflow (fmt, validate, Trivy). Dependabot covers Go modules, Docker and Actions.
+
+The pipeline earned its keep: its first real run caught a test-ordering bug the local runs hid (the rolling-restart check
+ran right after the smoke test had drained the rate limiter, and correctly received a 429).
+
+### 14. AWS (Terraform): ECS Fargate, not EKS
+Two stateless services and no need for Kubernetes' flexibility, so Fargate removes node management and cost. SQS replaces Kafka
+(the interface payoff above), RDS and ElastiCache replace the containers, an ALB replaces nginx. Task roles are least-privilege
+and *separate* (the API can only `SendMessage`; the consumer can only receive/delete). Secrets live in Secrets Manager. Redis and
+Postgres use TLS (`REDIS_TLS`, `sslmode=require`). A DLQ catches messages that fail 5 times, with an alarm. Migrations run as a
+one-off ECS task *before* the services are created. See [infra/terraform/README.md](infra/terraform/README.md) for the
+cost estimate and the honest list of what is and is not verified.
+
+Behind an ALB the client IP is the **rightmost** `X-Forwarded-For` entry (the ALB appends; earlier entries are client-forged).
+That rule is also correct for the nginx setup, which overwrites the header. (The first version used the leftmost entry, which
+is spoofable behind a load balancer that appends; found while designing the AWS deployment.)
 
 ## Failure behavior
 
@@ -154,19 +223,17 @@ At larger scale `clicks` should be time-partitioned, or moved to a column store;
 | API instance crash | Unused IDs in its block are skipped; queued, unsent clicks are lost |
 | Consumer crash | Uncommitted events re-delivered; idempotent insert prevents double count |
 
-## Known limitations (Phase 1)
+## Known limitations
 
-- Click loss is possible on Kafka outage or abrupt API crash (by design, see §4).
-- Single Kafka broker and single Postgres/Redis; no replication, TLS, or secrets management.
-- Poison messages are skipped, not dead-lettered.
+- Click loss is possible on a bus outage or abrupt API crash (by design, see §4). Observed during an outage test.
+- Compose and kind run a single Kafka broker, Postgres and Redis: no replication. The AWS Terraform has Multi-AZ options but defaults to single instances for cost.
+- Poison messages are skipped, not dead-lettered (SQS has a DLQ for delivery failures, but undecodable bodies are still skipped by the consumer).
 - No link update/delete (would require cache invalidation).
 - Swagger UI loads its assets from a CDN, so `/docs` needs internet access.
-- `clicks` is a single table; it will need partitioning at high volume.
-
-## Planned layers (not built yet)
-
-Prometheus/Grafana (dropped/failed/sent counters already exist on `events.Async`),
-Kubernetes (kind), GitHub Actions, Terraform on AWS (SQS adapter), k6 load tests.
+- `clicks` is a single table; it will need time partitioning at high volume.
+- The load-test numbers come from one laptop running everything; see [docs/LOADTEST.md](docs/LOADTEST.md) for what they do and do not show.
+- The AWS Terraform has been validated and security-scanned but never applied (no AWS account was used).
+- Kubernetes secrets in git are demo values; use a secret manager for anything real.
 
 ## Configuration
 
@@ -174,4 +241,5 @@ Environment variables, with defaults suitable for compose (`internal/config`):
 `DATABASE_URL`, `REDIS_ADDR`, `KAFKA_BROKERS`, `KAFKA_TOPIC`, `KAFKA_PARTITIONS`, `KAFKA_GROUP`,
 `BASE_URL`, `HTTP_ADDR`, `BLOCK_SIZE`, `SCRAMBLE_SECRET`, `CACHE_TTL`, `NEGATIVE_CACHE_TTL`,
 `RATE_LIMIT_BURST`, `RATE_LIMIT_PER_MINUTE`, `CONSUMER_BATCH_SIZE`, `CONSUMER_FLUSH_EVERY`,
-`SEED_API_KEY`, `TRUST_PROXY`.
+`SEED_API_KEY`, `TRUST_PROXY`, `METRICS_ADDR`, `EVENT_BACKEND` (`kafka`|`sqs`), `SQS_QUEUE_URL`, `SQS_ENDPOINT`,
+`AWS_REGION`, `REDIS_TLS`. Compose-only: `GRAFANA_PORT`, `RATE_LIMIT_*` (overridden by `make loadtest`).
