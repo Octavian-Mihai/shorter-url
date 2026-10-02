@@ -6,14 +6,6 @@ IDs, and an asynchronous, idempotent analytics pipeline over Kafka (or SQS).
 
 Redirects outnumber writes ~100:1, so every decision below favors the redirect path.
 
-```
-Client → nginx → api ×2 ──► Redis (cache, rate limit)
-                   │  └───► Postgres (source of truth, ID blocks)
-                   └─async─► Kafka ─► consumer ─► Postgres (clicks)
-```
-
-Diagram and package map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
 ## API docs
 
 Interactive Swagger UI served at `/docs` (rendered from `api/openapi.yaml`).
