@@ -1,0 +1,10 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: shortener
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # api NodePort 30080 -> http://localhost:8081 (8080 is used by docker compose)
+      - {containerPort: 30080, hostPort: 8081, listenAddress: 127.0.0.1}
+      # grafana NodePort 30300 -> http://localhost:3300
+      - {containerPort: 30300, hostPort: 3300, listenAddress: 127.0.0.1}

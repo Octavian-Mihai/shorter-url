@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+  labels: {app: consumer}
+spec:
+  # Scales to at most KAFKA_PARTITIONS (3) useful replicas: partitions are
+  # divided between members of the consumer group.
+  replicas: 2
+  selector: {matchLabels: {app: consumer}}
+  template:
+    metadata:
+      labels: {app: consumer}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      terminationGracePeriodSeconds: 30  # final batch flush on SIGTERM
+      initContainers:
+        - name: wait-for-schema
+          image: postgres:16-alpine
+          command: [sh, -c, "until psql \"$DATABASE_URL\" -tAc 'select 1 from clicks' >/dev/null 2>&1; do echo waiting for schema; sleep 2; done"]
+          envFrom: [{secretRef: {name: shortener-secrets}}]
+      containers:
+        - name: consumer
+          image: shortener
+          imagePullPolicy: IfNotPresent
+          command: ["/consumer"]
+          envFrom:
+            - configMapRef: {name: shortener-config}
+            - secretRef: {name: shortener-secrets}
+          env:
+            - {name: KAFKA_GROUP, value: click-consumer}
+          ports: [{name: metrics, containerPort: 9100}]
+          livenessProbe:
+            httpGet: {path: /healthz, port: metrics}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 48Mi}
+            limits: {memory: 192Mi}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}

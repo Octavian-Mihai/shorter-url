@@ -1,0 +1,22 @@
+# The `migrations` ConfigMap is created from /migrations by kind.sh (kustomize
+# cannot read files outside its root), so the SQL has a single source of truth.
+apiVersion: batch/v1
+kind: Job
+metadata: {name: migrate}
+spec:
+  backoffLimit: 20
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: migrate/migrate:v4.17.1
+          args: ["-path", "/migrations", "-database", "$(DATABASE_URL)", "up"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: shortener-secrets, key: DATABASE_URL}}
+          volumeMounts: [{name: migrations, mountPath: /migrations, readOnly: true}]
+      volumes:
+        - name: migrations
+          configMap: {name: migrations}

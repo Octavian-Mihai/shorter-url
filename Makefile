@@ -1,4 +1,4 @@
-.PHONY: test test-integration up up-sqs down logs smoke loadtest loadtest-smoke
+.PHONY: test test-integration up up-sqs down logs smoke loadtest loadtest-smoke k8s-up k8s-smoke k8s-rolling k8s-down
 
 test:
 	go test -race ./...
@@ -39,3 +39,13 @@ loadtest-smoke:
 # Same stack, but click events travel over SQS (ElasticMQ emulator) instead of Kafka.
 up-sqs:
 	docker compose -f docker-compose.yml -f docker-compose.sqs.yml up --build -d
+
+# Kubernetes (kind). Needs: kind, kubectl, docker.
+k8s-up:
+	./deploy/k8s/kind.sh up
+k8s-smoke:
+	./deploy/k8s/kind.sh smoke
+k8s-rolling:
+	./deploy/k8s/kind.sh rolling
+k8s-down:
+	./deploy/k8s/kind.sh down
