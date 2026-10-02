@@ -14,6 +14,46 @@ Client → nginx → api ×2 ──► Redis (cache, rate limit)
 
 Diagram and package map: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Architecture
+
+```mermaid
+flowchart LR
+    Client([Client]) --> LB[nginx<br/>round-robin]
+    LB --> API1[api #1]
+    LB --> API2[api #2]
+
+    subgraph API["api (stateless, N replicas)"]
+        direction TB
+        H[Handlers<br/>create / redirect / stats]
+        SVC[link.Service<br/>cache-aside + singleflight]
+        IDG["idgen: claim block → scramble → base62"]
+        ASYNC["events.Async<br/>bounded queue, drops on overflow"]
+        H --> SVC
+        SVC --> IDG
+        H -->|Emit click| ASYNC
+    end
+    API1 -.-> API
+    API2 -.-> API
+
+    Redis[(Redis<br/>slug cache · negative cache · token buckets)]
+    PG[(PostgreSQL<br/>links · api_keys · id_sequences · clicks)]
+    Kafka[[Kafka: click-events<br/>3 partitions, key = slug]]
+    subgraph C["consumer (consumer group)"]
+        B[batch by size / time]
+    end
+
+    SVC <-->|GET / SET| Redis
+    SVC -->|miss| PG
+    IDG -->|claim 1000 IDs per round trip| PG
+    H -->|rate limit: Lua token bucket| Redis
+    ASYNC -->|batched produce| Kafka
+    Kafka --> B -->|"INSERT … ON CONFLICT DO NOTHING<br/>then commit offsets"| PG
+    H -->|stats query| PG
+```
+
+More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+
 ## What's here
 
 | Layer | Where | Verified how |
