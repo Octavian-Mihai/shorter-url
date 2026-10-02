@@ -27,6 +27,23 @@ Controlled run, 1,000 redirects/s for 20 s:
 | Events dropped / failed | 0 / 0 |
 | Consumer lag afterwards | 0 |
 
+## Run-to-run variability (added after re-running)
+
+The 1.6 ms p95 above is the best case, not a guarantee. Re-running the same workload (1,200/s for 60 s) three more
+times on the same laptop gave:
+
+| Run | Redirect p50 | p95 | max | Failures |
+|---|---|---|---|---|
+| 1 (Grafana open in a browser) | 0.54 ms | 44 ms | 926 ms | 7 of 713 creates: `connection reset` |
+| 2 | 0.50 ms | 36 ms | 813 ms | 0 |
+| 3 | 0.42 ms | 1.6 ms | 48 ms | 0 |
+
+The **median is stable (~0.4–0.5 ms)**; the **tail is not** (p95 from 1.6 ms to 44 ms between identical runs). No container
+restarted, none was OOM-killed, and no component logged an error. The resets in run 1 happened in a roughly one-second burst
+and did not recur in the next two runs. The likeliest explanation is CPU contention on a laptop running ~10 containers plus
+a browser, but that is a hypothesis: I did not profile it. Treat tail latency here as "noisy", and do not read the best run as a
+guarantee. A dedicated load generator and host would be needed to say anything firm about p99.
+
 ## Read these numbers with care
 
 - Everything ran on one laptop under Docker Desktop: k6, nginx, 2 API replicas, Postgres, Redis, Kafka, the
