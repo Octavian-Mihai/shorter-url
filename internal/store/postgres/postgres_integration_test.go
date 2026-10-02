@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Octavian-Mihai/shorter-url/internal/events"
 	"github.com/Octavian-Mihai/shorter-url/internal/link"
 )
 
@@ -155,5 +156,31 @@ func TestStats(t *testing.T) {
 	empty, err := NewStatsRepo(pool).Stats(ctx, "none")
 	if err != nil || empty.TotalClicks != 0 || empty.ByDay == nil || empty.TopReferers == nil {
 		t.Errorf("empty = %+v, %v", empty, err)
+	}
+}
+
+func TestInsertClicksIdempotent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sink := NewClickSink(pool)
+	mk := func(id string) events.Click {
+		return events.Click{EventID: id, Slug: "s", At: time.Now(), Referer: "r\x00x", UserAgent: "ua\xff", IP: "1.2.3.4"}
+	}
+	batch := []events.Click{
+		mk("10000000-0000-0000-0000-000000000001"),
+		mk("10000000-0000-0000-0000-000000000002"),
+		mk("10000000-0000-0000-0000-000000000002"), // duplicate inside the batch
+	}
+	n, err := sink.InsertClicks(ctx, batch)
+	if err != nil || n != 2 {
+		t.Fatalf("first insert = %d, %v", n, err)
+	}
+	n, err = sink.InsertClicks(ctx, batch) // full redelivery
+	if err != nil || n != 0 {
+		t.Fatalf("redelivery = %d, %v", n, err)
+	}
+	var total int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM clicks`).Scan(&total); err != nil || total != 2 {
+		t.Errorf("rows = %d, %v", total, err)
 	}
 }
