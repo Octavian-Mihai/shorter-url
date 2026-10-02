@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "Not gofmt-clean:"; echo "$out"; exit 1; fi
+      - name: go mod tidy is a no-op
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - run: go vet ./...
+      - run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  integration:
+    name: Integration tests (real Postgres & Kafka)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: pw
+          POSTGRES_DB: t
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      kafka:
+        image: apache/kafka:3.8.0
+        ports: ["9092:9092"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Wait for Kafka
+        run: |
+          for _ in $(seq 1 60); do
+            (echo > /dev/tcp/localhost/9092) 2>/dev/null && exit 0
+            sleep 2
+          done
+          echo "kafka did not come up"; exit 1
+      - name: Integration tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:pw@localhost:5432/t?sslmode=disable
+          TEST_KAFKA_BROKERS: localhost:9092
+        run: go test -tags integration -race -count=1 -timeout 5m ./internal/store/postgres ./internal/events/kafka
+
+  e2e-compose:
+    name: End-to-end (docker compose)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        run: docker compose up --build -d
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 60); do
+            curl -fsS localhost:8080/readyz >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "stack not ready"; exit 1
+      - name: Smoke test
+        run: ./scripts/smoke.sh
+      - name: k6 smoke
+        run: |
+          docker run --rm --network shortener_default -v "$PWD/loadtest:/loadtest" \
+            -e BASE=http://nginx:8080 grafana/k6:0.54.0 run /loadtest/smoke.js
+      - name: Same stack on SQS (ElasticMQ)
+        run: |
+          docker compose down -v
+          docker compose -f docker-compose.yml -f docker-compose.sqs.yml up --build -d
+          for _ in $(seq 1 60); do curl -fsS localhost:8080/readyz >/dev/null 2>&1 && break; sleep 2; done
+          ./scripts/smoke.sh
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.sqs.yml down -v
+
+  e2e-kind:
+    name: End-to-end (Kubernetes / kind)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.33.0
+      - name: Deploy to kind
+        run: ./deploy/k8s/kind.sh up
+      - name: Smoke test
+        run: ./deploy/k8s/kind.sh smoke
+      - name: Rolling restart under traffic
+        run: ./deploy/k8s/kind.sh rolling
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl --context kind-shortener -n shortener get pods -o wide
+          kubectl --context kind-shortener -n shortener describe pods | tail -150
+          kubectl --context kind-shortener -n shortener logs deploy/api --tail=100 || true
+          kubectl --context kind-shortener -n shortener logs deploy/consumer --tail=100 || true
+
+  image:
+    name: Build (and publish on main) container image
+    runs-on: ubuntu-latest
+    needs: [test, integration]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
