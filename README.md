@@ -105,6 +105,46 @@ status/headers/click emission), the rate limiter, and the consumer's commit-afte
 and redelivery behavior. Integration tests (build tag `integration`) cover concurrent
 block claims against real Postgres, idempotent batch inserts, stats queries, and a Kafka round trip.
 
+## Path and purpose
+
+| Path | Purpose |
+|---|---|
+| `cmd/api/` | API process: wires config, Postgres, Redis, event publisher and HTTP server |
+| `cmd/consumer/` | Click-event consumer process (Kafka or SQS) |
+| `internal/httpapi/` | HTTP handlers, routing, response helpers, middleware |
+| `internal/link/` | Link service: cache-aside reads, singleflight coalescing, negative caching, expiry |
+| `internal/idgen/` | Block allocator, Feistel scramble, base62 encoding |
+| `internal/cache/` | Redis client for slug and negative caches |
+| `internal/ratelimit/` | Redis token bucket implemented in Lua |
+| `internal/auth/` | API-key hashing and lookup |
+| `internal/events/` | `Publisher` interface, bounded async queue, Kafka and SQS backends |
+| `internal/consumer/` | Batching consumer with commit-after-write, Kafka and SQS variants |
+| `internal/analytics/` | Click stats queries |
+| `internal/store/postgres/` | Postgres access with explicit SQL (`pgx`, no ORM) |
+| `internal/metrics/` | Prometheus metrics and observers |
+| `internal/config/` | Environment-driven configuration |
+| `api/` | Hand-written OpenAPI spec, embedded in the binary |
+| `migrations/` | SQL schema migrations |
+| `deploy/` | Dockerfiles, nginx, Prometheus rules, Grafana dashboard, kustomize manifests, kind scripts, ElasticMQ |
+| `infra/terraform/` | AWS stack: ECS Fargate, RDS, ElastiCache, SQS, ALB |
+| `loadtest/`, `scripts/` | k6 workload and smoke scripts |
+| `docs/` | Architecture and load-test write-ups |
+
+## Design patterns
+
+- **Cache-aside with request coalescing.** Redirects read Redis first, fall back to Postgres, cache misses as negative entries,
+  and `singleflight` collapses concurrent misses for one slug into one query.
+- **Range allocation.** Each instance claims a block of 1000 IDs in one atomic update and hands them out from memory.
+- **Keyed permutation for opaque codes.** A Feistel scramble plus base62 makes sequential IDs unguessable and collision-free.
+- **Fire-and-forget with a bounded queue.** Click emission is a non-blocking send; overflow is dropped and counted rather than
+  slowing the redirect.
+- **Interface-backed messaging.** `events` hides Kafka versus SQS behind one interface, selected by `EVENT_BACKEND`.
+- **At-least-once delivery plus idempotent sink.** The consumer commits offsets only after an `INSERT ... ON CONFLICT DO NOTHING`
+  succeeds, so redelivery is harmless.
+- **Token bucket in Lua.** Rate-limit checks are atomic in Redis.
+- **Stateless replicas behind a load balancer.** All state is in Redis, Postgres and the queue, so the API scales horizontally.
+- **Observer-style metrics.** Core code reports to observer interfaces, and the Prometheus implementation sits at the edge.
+
 ## Design decisions and rejected alternatives
 
 ### 1. Short codes: range allocation → Feistel scramble → base62
