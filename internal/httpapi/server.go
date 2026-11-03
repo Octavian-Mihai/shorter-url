@@ -80,9 +80,7 @@ func New(d Deps) *Server {
 		_, _ = w.Write(api.Spec)
 	})
 	s.mux.HandleFunc("GET /docs", handleDocs)
-	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/docs", http.StatusFound)
-	})
+	s.mux.HandleFunc("GET /{$}", handleHome)
 
 	s.mux.HandleFunc("GET /{slug}", in("redirect", s.handleRedirect)) // also serves HEAD
 	return s

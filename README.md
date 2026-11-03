@@ -6,6 +6,10 @@ IDs, and an asynchronous, idempotent analytics pipeline over Kafka (or SQS).
 
 Redirects outnumber writes ~100:1, so every decision below favors the redirect path.
 
+## Demo UI
+
+Open http://localhost:8080 after starting the stack: shorten a link, open it, and refresh to see the click count.
+
 ## API docs
 
 Interactive Swagger UI served at `/docs` (rendered from `api/openapi.yaml`).
@@ -73,7 +77,8 @@ docker compose up --build -d     # postgres, redis, kafka, migrations, 2× api, 
 ./scripts/smoke.sh               # end-to-end check (create, redirect, stats, rate limit)
 ```
 
-- API: http://localhost:8080 · Docs (Swagger UI): http://localhost:8080/docs
+- **Demo UI: http://localhost:8080** (paste a URL, get a short link, watch the click count)
+- API docs (Swagger UI): http://localhost:8080/docs
 - Demo API key: `dev-key-change-me` (set `SEED_API_KEY` to change it)
 
 ```bash

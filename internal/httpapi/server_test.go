@@ -348,8 +348,8 @@ func TestOpsEndpointsAndRoutingPrecedence(t *testing.T) {
 	if rec := h.do("GET", "/docs", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), "swagger-ui") {
 		t.Errorf("docs = %d", rec.Code)
 	}
-	if rec := h.do("GET", "/", ""); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/docs" {
-		t.Errorf("root = %d %q", rec.Code, rec.Header().Get("Location"))
+	if rec := h.do("GET", "/", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), "Shorten") {
+		t.Errorf("root = %d", rec.Code)
 	}
 	if h.links.resolves != 0 {
 		t.Error("literal routes must not fall through to the slug resolver")
