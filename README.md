@@ -10,11 +10,9 @@ Redirects outnumber writes ~100:1, so every decision below favors the redirect p
 
 Open http://localhost:8080 after starting the stack: shorten a link, open it, and refresh to see the click count.
 
-## API docs
+![Landing page of the URL Shortener](docs/screenshots/landing-page.png)
 
-Interactive Swagger UI served at `/docs` (rendered from `api/openapi.yaml`).
-
-![Swagger UI for the URL Shortener API](docs/screenshots/api-docs.png)
+The REST API is documented as interactive Swagger UI at `/docs` (rendered from `api/openapi.yaml`).
 
 ## Architecture
 
